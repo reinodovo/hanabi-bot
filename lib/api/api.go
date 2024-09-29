@@ -20,6 +20,13 @@ const ws = "/ws"
 
 const retryCount = 10
 
+type Client struct {
+	dialer  websocket.Dialer
+	url     url.URL
+	conn    *websocket.Conn
+	headers http.Header
+}
+
 type Credentials struct {
 	User string
 	Pass string
@@ -29,13 +36,39 @@ type LoginToken struct {
 	cookies []*http.Cookie
 }
 
+type TableJoin struct {
+	Id   uint32 `json:"tableID"`
+	Pass string `json:"password"`
+}
+
+type Table struct {
+	Id         uint32   `json:"id"`
+	Players    []string `json:"players"`
+	MaxPlayers uint32   `json:"maxPlayers"`
+}
+
+type ChatMessage struct {
+	Message string `json:"msg"`
+	Sender  string `json:"who"`
+}
+
+type ChatCommand struct {
+	Sender  string
+	Command string
+	Args    []string
+}
+
+type ServerMessage struct{}
+
+type Action struct{}
+
 func Login(c Credentials) LoginToken {
 	form := url.Values{}
 	form.Add("username", c.User)
 	form.Add("password", c.Pass)
 	form.Add("version", "bot")
 
-	url := url.URL { Scheme: httpProt, Host: host, Path: login }
+	url := url.URL{Scheme: httpProt, Host: host, Path: login}
 
 	r, err := http.NewRequest(
 		"POST",
@@ -69,27 +102,12 @@ func Login(c Credentials) LoginToken {
 	}
 }
 
-type Table struct {
-	Id uint32 `json:"tableID"`
-}
-
-type ServerMessage struct {}
-
 func parseMessage(_ *[]byte) (ServerMessage, error) {
 	return ServerMessage{}, nil
 }
 
-type Action struct {}
-
 func encodeMessage(Action) {
 
-}
-
-type Client struct {
-	dialer websocket.Dialer
-	url url.URL
-	conn *websocket.Conn
-	headers http.Header
 }
 
 func (self *Client) connect() {
@@ -103,7 +121,7 @@ func (self *Client) connect() {
 	panic(fmt.Sprint("Could not connect: ", err))
 }
 
-func (self *Client) sendMessageInternal(msgType string, obj *interface{}) {
+func (self *Client) sendMessageInternal(msgType string, obj interface{}) {
 	var msg string
 	var err error
 
@@ -143,29 +161,59 @@ func (self *Client) readMessageInternal() (string, []byte) {
 		}
 	}
 
-	parts := bytes.SplitN(msg, []byte(" "), 1)
+	parts := bytes.SplitN(msg, []byte{' '}, 2)
 
 	switch len(parts) {
-		case 1:
-			return string(parts[0]), nil
-		case 2:
-			return string(parts[0]), parts[1]
-		default:
-			panic("Bad server message")
+	case 1:
+		return string(parts[0]), nil
+	case 2:
+		return string(parts[0]), parts[1]
+	default:
+		panic("Bad server message")
 	}
 
 }
 
-func (self *Client) joinTable(t Table) {
-	self.sendMessageInternal("tableJoin", t)
+func (self *Client) SendMessage(msg interface{}) error {
+	switch m := msg.(type) {
+	case TableJoin:
+		self.sendMessageInternal("tableJoin", m)
+	default:
+		return fmt.Errorf("Unknown message type: %v", msg)
+	}
+	return nil
 }
 
-func (self *Client) ReadMessage() {
+func (self *Client) ReadMessage() (interface{}, error) {
 	msgType, content := self.readMessageInternal()
 
 	switch msgType {
-		case "ipa":
-		case "uga":
+	case "table":
+		table := Table{}
+		err := json.Unmarshal(content, &table)
+		return table, err
+	case "tableList":
+		tables := []Table{}
+		err := json.Unmarshal(content, &tables)
+		return tables, err
+	case "chat":
+		chat := ChatMessage{}
+		err := json.Unmarshal(content, &chat)
+		if err != nil {
+			return nil, err
+		}
+		if strings.HasPrefix(chat.Message, "/") {
+			parts := strings.Split(chat.Message, " ")
+			command := ChatCommand{
+				Sender:  chat.Sender,
+				Command: parts[0][1:],
+				Args:    parts[1:],
+			}
+			return command, nil
+		}
+		return chat, nil
+	default:
+		return nil, fmt.Errorf("Unknown message type: %v", msgType)
 	}
 }
 
@@ -173,10 +221,10 @@ func (*Client) PerformAction(msg Action) {
 
 }
 
-func Connect(c Credentials, table Table) Client {
-	loginToken := Login(c);
+func Connect(c Credentials) Client {
+	loginToken := Login(c)
 
-	url := url.URL { Scheme: wsProt, Host: host, Path: ws }
+	url := url.URL{Scheme: wsProt, Host: host, Path: ws}
 
 	jar, err := cookiejar.New(nil)
 	if err != nil {
@@ -184,25 +232,27 @@ func Connect(c Credentials, table Table) Client {
 	}
 	jar.SetCookies(&url, loginToken.cookies)
 
-	dialer := websocket.Dialer { Jar: jar }
+	dialer := websocket.Dialer{Jar: jar}
 
-	headers := http.Header {}
+	headers := http.Header{}
 	for _, cookie := range loginToken.cookies {
 		headers.Add("Cookie", cookie.String())
 	}
 
-	client := Client {
-		dialer: dialer,
-		url: url,
-		conn: nil,
+	client := Client{
+		dialer:  dialer,
+		url:     url,
+		conn:    nil,
 		headers: headers,
 	}
 
 	client.connect()
-	client.joinTable(table)
-
-	for {}
 
 	return client
 }
 
+func ConnectAndJoin(c Credentials, t TableJoin) Client {
+	client := Connect(c)
+	client.SendMessage(t)
+	return client
+}
