@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"reflect"
 	"strings"
 
 	"github.com/gorilla/websocket"
@@ -19,6 +20,10 @@ const login = "/login"
 const ws = "/ws"
 
 const retryCount = 10
+
+type Encodable interface {
+	tag() string
+}
 
 type Client struct {
 	dialer  websocket.Dialer
@@ -41,6 +46,10 @@ type TableJoin struct {
 	Pass string `json:"password"`
 }
 
+func (TableJoin) tag() string {
+	return "tableJoin"
+}
+
 type Table struct {
 	Id         uint32   `json:"id"`
 	Players    []string `json:"players"`
@@ -57,10 +66,6 @@ type ChatCommand struct {
 	Command string
 	Args    []string
 }
-
-type ServerMessage struct{}
-
-type Action struct{}
 
 func Login(c Credentials) LoginToken {
 	form := url.Values{}
@@ -102,15 +107,7 @@ func Login(c Credentials) LoginToken {
 	}
 }
 
-func parseMessage(_ *[]byte) (ServerMessage, error) {
-	return ServerMessage{}, nil
-}
-
-func encodeMessage(Action) {
-
-}
-
-func (self *Client) connect() {
+func (self *Client) establishConnection() {
 	var err error
 	for i := 0; i < retryCount; i++ {
 		self.conn, _, err = websocket.DefaultDialer.Dial(self.url.String(), self.headers)
@@ -121,43 +118,41 @@ func (self *Client) connect() {
 	panic(fmt.Sprint("Could not connect: ", err))
 }
 
-func (self *Client) sendMessageInternal(msgType string, obj interface{}) {
+func (self *Client) SendMessage(obj Encodable) error {
 	var msg string
 	var err error
 
-	if obj != nil {
-		j, err := json.Marshal(obj)
-		if err != nil {
-			panic(err)
-		}
-		msg = fmt.Sprintf("%v %v", msgType, string(j))
-	} else {
-		msg = msgType
+	j, err := json.Marshal(obj)
+	if err != nil {
+		panic(fmt.Sprint("Could not marshal Encodable of type: ", reflect.TypeOf(obj)))
 	}
 
-	fmt.Println(msg)
+	if string(j) == "{}" {
+		msg = obj.tag()
+	} else {
+		msg = fmt.Sprintf("%v %v", obj.tag(), string(j))
+	}
+
 	bytes := []byte(msg)
 
 	err = self.conn.WriteMessage(websocket.TextMessage, bytes)
 	if err != nil {
-		self.connect()
+		self.establishConnection()
 		err = self.conn.WriteMessage(websocket.TextMessage, bytes)
-		if err != nil {
-			panic(err)
-		}
 	}
+	return err
 }
 
-func (self *Client) readMessageInternal() (string, []byte) {
+func (self *Client) readMessageInternal() (string, []byte, error) {
 	var msg []byte
 	var err error
 
 	_, msg, err = self.conn.ReadMessage()
 	if err != nil {
-		self.connect()
+		self.establishConnection()
 		_, msg, err = self.conn.ReadMessage()
 		if err != nil {
-			panic(err)
+			return "", nil, err
 		}
 	}
 
@@ -165,27 +160,20 @@ func (self *Client) readMessageInternal() (string, []byte) {
 
 	switch len(parts) {
 	case 1:
-		return string(parts[0]), nil
+		return string(parts[0]), nil, nil
 	case 2:
-		return string(parts[0]), parts[1]
+		return string(parts[0]), parts[1], nil
 	default:
-		panic("Bad server message")
+		return "", nil, fmt.Errorf("Bad server message")
 	}
 
-}
-
-func (self *Client) SendMessage(msg interface{}) error {
-	switch m := msg.(type) {
-	case TableJoin:
-		self.sendMessageInternal("tableJoin", m)
-	default:
-		return fmt.Errorf("Unknown message type: %v", msg)
-	}
-	return nil
 }
 
 func (self *Client) ReadMessage() (interface{}, error) {
-	msgType, content := self.readMessageInternal()
+	msgType, content, err := self.readMessageInternal()
+	if err != nil {
+		return nil, err
+	}
 
 	switch msgType {
 	case "table":
@@ -217,10 +205,6 @@ func (self *Client) ReadMessage() (interface{}, error) {
 	}
 }
 
-func (*Client) PerformAction(msg Action) {
-
-}
-
 func Connect(c Credentials) Client {
 	loginToken := Login(c)
 
@@ -246,7 +230,7 @@ func Connect(c Credentials) Client {
 		headers: headers,
 	}
 
-	client.connect()
+	client.establishConnection()
 
 	return client
 }

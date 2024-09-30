@@ -49,7 +49,9 @@ func main() {
 		message, err := client.ReadMessage()
 		if err != nil {
 			//log.Println(err)
+			continue
 		}
+
 		switch msg := message.(type) {
 		case []api.Table:
 			tables = make(map[uint32]api.Table)
