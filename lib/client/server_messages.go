@@ -47,3 +47,7 @@ type GameActionList struct {
 type TableStart struct {
 	TableId int `json:"tableID"`
 }
+
+type TableGone struct {
+	TableId int `json:"tableID"`
+}

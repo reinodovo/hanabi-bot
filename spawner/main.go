@@ -76,6 +76,8 @@ func main() {
 			}
 		case client.Table:
 			spawner.tables[msg.Id] = msg
+		case client.TableGone:
+			delete(spawner.tables, msg.TableId)
 		case client.ChatCommand:
 			spawner.handleCommand(msg)
 		}

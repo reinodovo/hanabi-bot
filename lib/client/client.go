@@ -193,6 +193,10 @@ func (self *Client) ReadMessage() (interface{}, error) {
 		table := TableStart{}
 		err := json.Unmarshal(content, &table)
 		return table, err
+	case "tableGone":
+		table := TableGone{}
+		err := json.Unmarshal(content, &table)
+		return table, err
 	default:
 		return nil, fmt.Errorf("%w: %v", errUnknownMessageType, msgType)
 	}
