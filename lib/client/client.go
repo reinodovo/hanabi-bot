@@ -1,4 +1,4 @@
-package api
+package client
 
 import (
 	"bytes"
@@ -9,7 +9,9 @@ import (
 	"net/url"
 	"reflect"
 	"strings"
+	"time"
 
+	"github.com/avast/retry-go/v4"
 	"github.com/gorilla/websocket"
 )
 
@@ -21,9 +23,7 @@ const ws = "/ws"
 
 const retryCount = 10
 
-type Encodable interface {
-	tag() string
-}
+var errUnknownMessageType = fmt.Errorf("unknown message type")
 
 type Client struct {
 	dialer  websocket.Dialer
@@ -39,32 +39,6 @@ type Credentials struct {
 
 type LoginToken struct {
 	cookies []*http.Cookie
-}
-
-type TableJoin struct {
-	Id   uint32 `json:"tableID"`
-	Pass string `json:"password"`
-}
-
-func (TableJoin) tag() string {
-	return "tableJoin"
-}
-
-type Table struct {
-	Id         uint32   `json:"id"`
-	Players    []string `json:"players"`
-	MaxPlayers uint32   `json:"maxPlayers"`
-}
-
-type ChatMessage struct {
-	Message string `json:"msg"`
-	Sender  string `json:"who"`
-}
-
-type ChatCommand struct {
-	Sender  string
-	Command string
-	Args    []string
 }
 
 func Login(c Credentials) LoginToken {
@@ -107,18 +81,13 @@ func Login(c Credentials) LoginToken {
 	}
 }
 
-func (self *Client) establishConnection() {
-	var err error
-	for i := 0; i < retryCount; i++ {
-		self.conn, _, err = websocket.DefaultDialer.Dial(self.url.String(), self.headers)
-		if err == nil {
-			return
-		}
-	}
-	panic(fmt.Sprint("Could not connect: ", err))
+func (self *Client) establishConnection() (err error) {
+	self.conn, _, err = websocket.DefaultDialer.Dial(self.url.String(), self.headers)
+	return
 }
 
-func (self *Client) SendMessage(obj Encodable) error {
+func (self *Client) SendMessage(obj Encodable) {
+	time.Sleep(100 * time.Millisecond)
 	var msg string
 	var err error
 
@@ -135,25 +104,33 @@ func (self *Client) SendMessage(obj Encodable) error {
 
 	bytes := []byte(msg)
 
-	err = self.conn.WriteMessage(websocket.TextMessage, bytes)
+	err = retry.Do(
+		func() error {
+			return self.conn.WriteMessage(websocket.TextMessage, bytes)
+		},
+		retry.Attempts(retryCount),
+		retry.OnRetry(func(n uint, err error) {
+			self.establishConnection()
+		}),
+	)
 	if err != nil {
-		self.establishConnection()
-		err = self.conn.WriteMessage(websocket.TextMessage, bytes)
+		panic(err)
 	}
-	return err
 }
 
 func (self *Client) readMessageInternal() (string, []byte, error) {
-	var msg []byte
-	var err error
-
-	_, msg, err = self.conn.ReadMessage()
+	msg, err := retry.DoWithData(
+		func() ([]byte, error) {
+			_, msg, err := self.conn.ReadMessage()
+			return msg, err
+		},
+		retry.Attempts(retryCount),
+		retry.OnRetry(func(n uint, err error) {
+			self.establishConnection()
+		}),
+	)
 	if err != nil {
-		self.establishConnection()
-		_, msg, err = self.conn.ReadMessage()
-		if err != nil {
-			return "", nil, err
-		}
+		panic(err)
 	}
 
 	parts := bytes.SplitN(msg, []byte{' '}, 2)
@@ -200,8 +177,24 @@ func (self *Client) ReadMessage() (interface{}, error) {
 			return command, nil
 		}
 		return chat, nil
+	case "gameAction":
+		action := GameAction{}
+		err := json.Unmarshal(content, &action)
+		return action.Action, err
+	case "init":
+		init := Init{}
+		err := json.Unmarshal(content, &init)
+		return init, err
+	case "gameActionList":
+		actionList := GameActionList{}
+		err := json.Unmarshal(content, &actionList)
+		return actionList.Actions, err
+	case "tableStart":
+		table := TableStart{}
+		err := json.Unmarshal(content, &table)
+		return table, err
 	default:
-		return nil, fmt.Errorf("Unknown message type: %v", msgType)
+		return nil, fmt.Errorf("%w: %v", errUnknownMessageType, msgType)
 	}
 }
 
@@ -230,13 +223,13 @@ func Connect(c Credentials) Client {
 		headers: headers,
 	}
 
-	client.establishConnection()
+	err = retry.Do(func() error {
+		return client.establishConnection()
+	}, retry.Attempts(retryCount))
 
-	return client
-}
+	if err != nil {
+		panic(err)
+	}
 
-func ConnectAndJoin(c Credentials, t TableJoin) Client {
-	client := Connect(c)
-	client.SendMessage(t)
 	return client
 }

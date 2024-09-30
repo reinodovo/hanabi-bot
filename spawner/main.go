@@ -1,16 +1,19 @@
 package main
 
 import (
-	"fmt"
 	"os"
 
-	"github.com/reinodovo/hanabi-bot/lib/api"
+	"github.com/reinodovo/hanabi-bot/lib/client"
 )
 
-var botCount = 0
-var password = os.Getenv("PASSWORD")
+var password = os.Getenv("BOT_PASSWORD")
 
-func findTable(player string, tables map[uint32]api.Table) *api.Table {
+type Spawner struct {
+	strategy SpawnerStrategy
+	tables   map[int]client.Table
+}
+
+func findTable(player string, tables map[int]client.Table) *client.Table {
 	for _, table := range tables {
 		for _, p := range table.Players {
 			if p == player {
@@ -21,71 +24,60 @@ func findTable(player string, tables map[uint32]api.Table) *api.Table {
 	return nil
 }
 
-func spawnBot(table api.Table, pass string) {
-	bot := api.Credentials{
-		User: fmt.Sprintf("ovo-test-%v", botCount),
-		Pass: password,
+func (spawner Spawner) handleCommand(chat client.ChatCommand) {
+	if chat.Command == "join" {
+		pass := ""
+		if len(chat.Args) > 0 {
+			pass = chat.Args[0]
+		}
+		table := findTable(chat.Sender, spawner.tables)
+		if table == nil {
+			return
+		}
+		go spawner.strategy.Spawn(table.Id, pass)
+	} else if chat.Command == "fill" {
+		pass := ""
+		if len(chat.Args) > 0 {
+			pass = chat.Args[0]
+		}
+		table := findTable(chat.Sender, spawner.tables)
+		if table == nil {
+			return
+		}
+		for i := 0; i < int(table.MaxPlayers)-len(table.Players); i++ {
+			go spawner.strategy.Spawn(table.Id, pass)
+		}
 	}
-	botCount++
-	go func() {
-		api.ConnectAndJoin(bot, api.TableJoin{
-			Id:   table.Id,
-			Pass: pass,
-		})
-	}()
 }
 
 func main() {
-	cred := api.Credentials{
+	cred := client.Credentials{
 		User: "reinodovo",
 		Pass: password,
 	}
 
-	client := api.Connect(cred)
-
-	tables := make(map[uint32]api.Table)
+	c := client.Connect(cred)
+	spawner := Spawner{
+		strategy: NewLocalSpawnerStrategy(),
+		tables:   make(map[int]client.Table),
+	}
 
 	for {
-		message, err := client.ReadMessage()
+		message, err := c.ReadMessage()
 		if err != nil {
-			//log.Println(err)
 			continue
 		}
 
 		switch msg := message.(type) {
-		case []api.Table:
-			tables = make(map[uint32]api.Table)
+		case []client.Table:
+			spawner.tables = make(map[int]client.Table)
 			for _, table := range msg {
-				tables[table.Id] = table
+				spawner.tables[table.Id] = table
 			}
-			fmt.Println(len(msg))
-		case api.Table:
-			tables[msg.Id] = msg
-			fmt.Println(len(tables))
-		case api.ChatCommand:
-			if msg.Command == "join" {
-				pass := ""
-				if len(msg.Args) > 0 {
-					pass = msg.Args[0]
-				}
-				table := findTable(msg.Sender, tables)
-				if table == nil {
-					continue
-				}
-				spawnBot(*table, pass)
-			} else if msg.Command == "fill" {
-				pass := ""
-				if len(msg.Args) > 0 {
-					pass = msg.Args[0]
-				}
-				table := findTable(msg.Sender, tables)
-				if table == nil {
-					continue
-				}
-				for i := 0; i < int(table.MaxPlayers)-len(table.Players); i++ {
-					spawnBot(*table, pass)
-				}
-			}
+		case client.Table:
+			spawner.tables[msg.Id] = msg
+		case client.ChatCommand:
+			spawner.handleCommand(msg)
 		}
 	}
 }
