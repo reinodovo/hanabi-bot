@@ -146,6 +146,11 @@ func (self *Client) readMessageInternal() (string, []byte, error) {
 
 }
 
+func parse[T interface{}](content []byte) (res T, err error) {
+	err = json.Unmarshal(content, &res)
+	return
+}
+
 func (self *Client) ReadMessage() (interface{}, error) {
 	msgType, content, err := self.readMessageInternal()
 	if err != nil {
@@ -154,16 +159,11 @@ func (self *Client) ReadMessage() (interface{}, error) {
 
 	switch msgType {
 	case "table":
-		table := Table{}
-		err := json.Unmarshal(content, &table)
-		return table, err
+		return parse[Table](content)
 	case "tableList":
-		tables := []Table{}
-		err := json.Unmarshal(content, &tables)
-		return tables, err
+		return parse[[]Table](content)
 	case "chat":
-		chat := ChatMessage{}
-		err := json.Unmarshal(content, &chat)
+		chat, err := parse[ChatMessage](content)
 		if err != nil {
 			return nil, err
 		}
@@ -178,25 +178,16 @@ func (self *Client) ReadMessage() (interface{}, error) {
 		}
 		return chat, nil
 	case "gameAction":
-		action := GameAction{}
-		err := json.Unmarshal(content, &action)
-		return action.Action, err
+		return parse[GameAction](content)
 	case "init":
-		init := Init{}
-		err := json.Unmarshal(content, &init)
-		return init, err
+		return parse[Init](content)
 	case "gameActionList":
-		actionList := GameActionList{}
-		err := json.Unmarshal(content, &actionList)
+		actionList, err := parse[GameActionList](content)
 		return actionList.Actions, err
 	case "tableStart":
-		table := TableStart{}
-		err := json.Unmarshal(content, &table)
-		return table, err
+		return parse[TableStart](content)
 	case "tableGone":
-		table := TableGone{}
-		err := json.Unmarshal(content, &table)
-		return table, err
+		return parse[TableGone](content)
 	default:
 		return nil, fmt.Errorf("%w: %v", errUnknownMessageType, msgType)
 	}
